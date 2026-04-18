@@ -1,4 +1,385 @@
-﻿<!DOCTYPE html>
+﻿<?php
+
+class Player {
+    private $rank;
+    private $title;
+    private $points;
+    private $badge;
+    private $codeName;
+    private $photo;
+
+    public function __construct($rank, $title, $points, $badge, $codeName, $photo = null) {
+        $this->rank = $rank;
+        $this->title = $title;
+        $this->points = $points;
+        $this->badge = $badge;
+        $this->codeName = $codeName;
+        $this->photo = $photo;
+    }
+
+    public function getRank() { return $this->rank; }
+    public function getTitle() { return $this->title; }
+    public function getPoints() { return $this->points; }
+    public function getBadge() { return $this->badge; }
+    public function getCodeName() { return $this->codeName; }
+
+    public function getRankLabel() {
+        $labels = [1 => "Top 1", 2 => "Top 2", 3 => "Top 3"];
+        return $labels[$this->rank] ?? "Top " . $this->rank;
+    }
+
+    public function renderRankCircle() {
+        $photoHtml = '';
+        if ($this->photo) {
+            $photoHtml = '<img src="' . htmlspecialchars($this->photo) . '" class="rank-photo" alt="' . htmlspecialchars($this->title) . '">';
+        }
+        $rankBadge = '<img src="img/rank-' . htmlspecialchars($this->rank) . '.png" class="rank-badge" alt="Rank ' . htmlspecialchars($this->rank) . '">';
+        return sprintf(
+            '<div class="rank-circle" data-rank="%s">%s%s</div>',
+            htmlspecialchars($this->getRankLabel()),
+            $photoHtml,
+            $rankBadge
+        );
+    }
+
+    public function renderRankMeta() {
+        $mvpCount = (int)$this->badge;
+        
+        return sprintf(
+            '<div class="rank-meta">
+                <div class="codename-badge">%s</div>
+                <div class="stats-row">
+                    <div class="stat-column">
+                        <div class="stat-number">%d</div>
+                        <div class="stat-underline"></div>
+                        <div class="stat-label">points</div>
+                    </div>
+                    <div class="stat-divider">|</div>
+                    <div class="stat-column">
+                        <div class="stat-number">%d</div>
+                        <div class="stat-underline"></div>
+                        <div class="stat-label">mvp</div>
+                    </div>
+                </div>
+                <div class="player-name">%s</div>
+            </div>',
+            htmlspecialchars($this->codeName),
+            $this->points,
+            $mvpCount,
+            htmlspecialchars($this->title)
+        );
+    }
+}
+
+class LeaderboardEntry {
+    private $position;
+    private $player1;
+    private $player2;
+    private $score;
+
+    public function __construct($position, $player1, $player2, $score) {
+        $this->position = $position;
+        $this->player1 = $player1;
+        $this->player2 = $player2;
+        $this->score = $score;
+    }
+
+    public function render() {
+        return '<tr><td class="position">' . (int)$this->position . '</td><td class="player-name">' . htmlspecialchars($this->player1) . '</td><td class="player-codename clickable-codename" onclick="openPlayerModal(\'' . htmlspecialchars($this->player2) . '\')">' . htmlspecialchars($this->player2) . '</td><td class="score">' . htmlspecialchars($this->score) . '</td></tr>';
+    }
+}
+
+class Leaderboard {
+    private $title;
+    private $entries;
+
+    public function __construct($title) {
+        $this->title = $title;
+        $this->entries = [];
+    }
+
+    public function addEntry(LeaderboardEntry $entry) {
+        $this->entries[] = $entry;
+    }
+
+    public function render() {
+        $html = '<div class="leaderboard card"><div class="leaderboard-title">' . htmlspecialchars($this->title) . '</div><table class="leaderboard-table"><thead><tr><th>No.</th><th>Name</th><th>Codename</th><th>' . ($this->title === 'MVP Leaderboard' ? 'MVP' : 'Points') . '</th></tr></thead><tbody>';
+        
+        foreach ($this->entries as $entry) {
+            $html .= $entry->render();
+        }
+
+        $html .= '</tbody></table></div>';
+        return $html;
+    }
+}
+
+class GamePage {
+    private $topPlayers;
+    private $pointsLeaderboard;
+    private $mvpLeaderboard;
+    private $debugInfo = [];
+    private $allPlayers = [];
+    private $topPlayerRanks = [];
+
+    public function __construct() {
+        $this->topPlayers = [];
+        $this->pointsLeaderboard = new Leaderboard("Points Leaderboard");
+        $this->mvpLeaderboard = new Leaderboard("MVP Leaderboard");
+        $this->initializeData();
+    }
+
+    public function getDebugInfo() {
+        return $this->debugInfo;
+    }
+
+    private function initializeData() {
+        $apiUrl = "https://script.google.com/macros/s/AKfycbyUxiVxRcHWcVhkGWuxKZVBwHfzIkgH5r2itvqh-06vQYf9p07FlWfMkkPWneJ9oJJgQQ/exec";
+        
+        $players = $this->fetchPlayersFromAPI($apiUrl);
+        
+        if (empty($players)) {
+            // Fallback to default data if API fails
+            $this->loadDefaultData();
+            return;
+        }
+
+        // Store all players for modal access
+        $this->allPlayers = $players;
+
+        // Sort by points (highest first)
+        usort($players, function($a, $b) {
+            return ($b['points'] ?? 0) - ($a['points'] ?? 0);
+        });
+
+        // Build top 3 players
+        for ($i = 0; $i < min(3, count($players)); $i++) {
+            $player = $players[$i];
+            $mvpCount = (int)($player['mvp'] ?? 0);
+            $badge = $mvpCount > 0 ? $mvpCount : '';
+            $codename = $player['codename'] ?? 'Unknown';
+            $rank = $i + 1;
+            
+            // Track rank for this player
+            $this->topPlayerRanks[$codename] = $rank;
+            
+            $this->topPlayers[] = new Player(
+                $rank,
+                $player['name'] ?? 'Player',
+                $player['points'] ?? 0,
+                $badge,
+                $codename,
+                $player['photo'] ?? null
+            );
+        }
+
+        // Points Leaderboard - Top 10
+        for ($i = 0; $i < min(10, count($players)); $i++) {
+            $this->pointsLeaderboard->addEntry(new LeaderboardEntry(
+                $i + 1,
+                $players[$i]['name'] ?? 'Unknown',
+                $players[$i]['codename'] ?? 'N/A',
+                (string)($players[$i]['points'] ?? 0)
+            ));
+        }
+
+        // Sort by MVP count (highest first) for MVP leaderboard
+        $mvpSortedPlayers = $players;
+        usort($mvpSortedPlayers, function($a, $b) {
+            return ($b['mvp'] ?? 0) - ($a['mvp'] ?? 0);
+        });
+
+        // MVP Leaderboard - Top 10
+        for ($i = 0; $i < min(10, count($mvpSortedPlayers)); $i++) {
+            $mvpCount = (int)($mvpSortedPlayers[$i]['mvp'] ?? 0);
+            $this->mvpLeaderboard->addEntry(new LeaderboardEntry(
+                $i + 1,
+                $mvpSortedPlayers[$i]['name'] ?? 'Unknown',
+                $mvpSortedPlayers[$i]['codename'] ?? 'N/A',
+                (string)$mvpCount
+            ));
+        }
+    }
+
+    private function fetchPlayersFromAPI($url) {
+        $this->debugInfo[] = "Attempting to fetch from: $url";
+
+        // Try cURL first (more reliable)
+        if (function_exists('curl_init')) {
+            $this->debugInfo[] = "Using cURL method";
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlError = curl_error($ch);
+            curl_close($ch);
+            
+            if ($curlError) {
+                $this->debugInfo[] = "cURL Error: $curlError";
+            } else {
+                $this->debugInfo[] = "cURL HTTP Code: $httpCode";
+            }
+        } else {
+            $this->debugInfo[] = "cURL not available, attempting file_get_contents";
+            
+            // Fallback to file_get_contents
+            if (!ini_get('allow_url_fopen')) {
+                $this->debugInfo[] = "ERROR: allow_url_fopen is disabled";
+                return [];
+            }
+
+            $options = [
+                'http' => [
+                    'method' => 'GET',
+                    'timeout' => 10,
+                    'header' => "Accept: application/json\r\nUser-Agent: PHP\r\n",
+                    'ignore_errors' => true,
+                ]
+            ];
+            
+            $context = stream_context_create($options);
+            $response = @file_get_contents($url, false, $context);
+            
+            if ($response === false) {
+                $this->debugInfo[] = "ERROR: file_get_contents failed";
+                return [];
+            }
+        }
+
+        if (empty($response)) {
+            $this->debugInfo[] = "ERROR: Empty response from API";
+            return [];
+        }
+
+        $this->debugInfo[] = "Response received, length: " . strlen($response) . " bytes";
+        $this->debugInfo[] = "Response (first 300 chars): " . substr($response, 0, 300);
+
+        // Try to decode the JSON response
+        $data = @json_decode($response, true);
+        
+        if ($data === null) {
+            $this->debugInfo[] = "ERROR: Invalid JSON - " . json_last_error_msg();
+            return [];
+        }
+
+        if (!is_array($data)) {
+            $this->debugInfo[] = "ERROR: Response is not an array, got " . gettype($data);
+            return [];
+        }
+
+        $this->debugInfo[] = "API returned " . count($data) . " records";
+
+        // If response is wrapped in a 'data' key, unwrap it
+        if (isset($data['data']) && is_array($data['data'])) {
+            $data = $data['data'];
+            $this->debugInfo[] = "Unwrapped data key, now have " . count($data) . " records";
+        }
+
+        // Convert array keys to lowercase for consistency
+        $normalizedData = array_map(function($item) {
+            if (!is_array($item)) {
+                return $item;
+            }
+            $normalized = [];
+            foreach ($item as $key => $value) {
+                $normalized[strtolower($key)] = $value;
+            }
+            return $normalized;
+        }, $data);
+
+        $this->debugInfo[] = "Normalized data keys";
+        if (!empty($normalizedData)) {
+            $this->debugInfo[] = "First record keys: " . implode(", ", array_keys($normalizedData[0]));
+            $this->debugInfo[] = "First record: " . json_encode($normalizedData[0]);
+        }
+
+        return $normalizedData;
+    }
+
+    private function loadDefaultData() {
+        // Sample data for testing when API is unavailable
+        $this->allPlayers = [
+            [
+                'name' => 'Alice Johnson',
+                'codename' => 'AJ',
+                'points' => 200,
+                'mvp' => 8,
+                'photo' => null
+            ],
+            [
+                'name' => 'Bob Smith',
+                'codename' => 'BS',
+                'points' => 180,
+                'mvp' => 6,
+                'photo' => null
+            ],
+            [
+                'name' => 'Charlie Brown',
+                'codename' => 'CB',
+                'points' => 160,
+                'mvp' => 4,
+                'photo' => null
+            ],
+            [
+                'name' => 'Diana Prince',
+                'codename' => 'DP',
+                'points' => 140,
+                'mvp' => 3,
+                'photo' => null
+            ],
+            [
+                'name' => 'Eve Wilson',
+                'codename' => 'EW',
+                'points' => 120,
+                'mvp' => 2,
+                'photo' => null
+            ]
+        ];
+    }
+
+    public function renderRankingPanel() {
+        $html = '<div class="ranking-panel">';
+        foreach ($this->topPlayers as $player) {
+            $html .= sprintf(
+                '<article class="rank-item">%s%s</article>',
+                $player->renderRankCircle(),
+                $player->renderRankMeta()
+            );
+        }
+        $html .= '</div>';
+        return $html;
+    }
+
+    public function renderLeaderboards() {
+        return $this->pointsLeaderboard->render() . $this->mvpLeaderboard->render();
+    }
+
+    public function getPlayerDataJson() {
+        $playerData = [];
+        foreach ($this->allPlayers as $player) {
+            $codename = $player['codename'] ?? 'N/A';
+            $rank = isset($this->topPlayerRanks[$codename]) ? $this->topPlayerRanks[$codename] : null;
+            
+            $playerData[] = [
+                'name' => $player['name'] ?? 'Unknown',
+                'codename' => $codename,
+                'points' => $player['points'] ?? 0,
+                'mvp' => $player['mvp'] ?? 0,
+                'photo' => $player['photo'] ?? null,
+                'rank' => $rank
+            ];
+        }
+        return htmlspecialchars(json_encode($playerData), ENT_QUOTES, 'UTF-8');
+    }
+
+    public function render() {
+        return '<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -100,7 +481,7 @@
     body {
       margin: 0;
       min-height: 100vh;
-      background: url('img/body-bg.png') center/cover fixed no-repeat;
+      background: url(\'img/body-bg.png\') center/cover fixed no-repeat;
       color: var(--text);
       display: flex;
       justify-content: center;
@@ -135,7 +516,7 @@
       flex-direction: column;
       align-items: center;
       gap: 16px;
-      background: url('img/ranking-card-bg.png') center/cover no-repeat;
+      background: url(\'img/ranking-card-bg.png\') center/cover no-repeat;
       margin-top: 12px;
       padding: -28px 20px;
       border-radius: 12px;
@@ -259,7 +640,7 @@
       gap: 12px;
       align-items: center;
       text-align: center;
-      background: url('img/rank-item-bg.png') center/100% auto no-repeat;
+      background: url(\'img/rank-item-bg.png\') center/100% auto no-repeat;
       padding: 20px 16px 150px 16px;
       border-radius: 12px;
       width: 100%;
@@ -496,6 +877,27 @@
       transform: scale(1.05);
     }
 
+    .sticky-logo-header {
+      position: sticky;
+      top: 0;
+      z-index: 999;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100%;
+      height: 100px;
+      background: linear-gradient(180deg, rgba(90, 0, 255, 0.9), rgba(90, 0, 255, 0.5) 80%, transparent);
+      backdrop-filter: blur(10px);
+      padding: 10px 0;
+      box-shadow: 0 4px 20px rgba(147, 112, 219, 0.3);
+    }
+
+    .sticky-logo-header img {
+      max-width: 280px;
+      max-height: 80px;
+      object-fit: contain;
+    }
+
     .highlight {
       color: #ffdd55;
     }
@@ -706,61 +1108,17 @@
   </style>
 </head>
 <body>
+  <header class="sticky-logo-header">
+    <img src="img/tdwl-games-logo.PNG" alt="TDWL Games">
+  </header>
+
   <main class="page">
     <section class="card">
-      <div class="ranking-panel"><article class="rank-item"><div class="rank-circle" data-rank="Top 1"><img src="https://i.supaimg.com/eb3f4fd3-517c-4c99-9027-82321cb69357/08c404b4-0fd0-4b42-8ea0-366c0f208d68.png" class="rank-photo" alt="iocsh"><img src="img/rank-1.png" class="rank-badge" alt="Rank 1"></div><div class="rank-meta">
-                <div class="codename-badge">meisch</div>
-                <div class="stats-row">
-                    <div class="stat-column">
-                        <div class="stat-number">999</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">points</div>
-                    </div>
-                    <div class="stat-divider">|</div>
-                    <div class="stat-column">
-                        <div class="stat-number">999</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">mvp</div>
-                    </div>
-                </div>
-                <div class="player-name">iocsh</div>
-            </div></article><article class="rank-item"><div class="rank-circle" data-rank="Top 2"><img src="img/rank-2.png" class="rank-badge" alt="Rank 2"></div><div class="rank-meta">
-                <div class="codename-badge">kee</div>
-                <div class="stats-row">
-                    <div class="stat-column">
-                        <div class="stat-number">123</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">points</div>
-                    </div>
-                    <div class="stat-divider">|</div>
-                    <div class="stat-column">
-                        <div class="stat-number">1</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">mvp</div>
-                    </div>
-                </div>
-                <div class="player-name">keelia</div>
-            </div></article><article class="rank-item"><div class="rank-circle" data-rank="Top 3"><img src="img/rank-3.png" class="rank-badge" alt="Rank 3"></div><div class="rank-meta">
-                <div class="codename-badge">cutiepie</div>
-                <div class="stats-row">
-                    <div class="stat-column">
-                        <div class="stat-number">110</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">points</div>
-                    </div>
-                    <div class="stat-divider">|</div>
-                    <div class="stat-column">
-                        <div class="stat-number">0</div>
-                        <div class="stat-underline"></div>
-                        <div class="stat-label">mvp</div>
-                    </div>
-                </div>
-                <div class="player-name">kye mobato</div>
-            </div></article></div>
+      ' . $this->renderRankingPanel() . '
     </section>
 
     <section class="leaderboards">
-      <div class="leaderboard card"><div class="leaderboard-title">Points Leaderboard</div><table class="leaderboard-table"><thead><tr><th>No.</th><th>Name</th><th>Codename</th><th>Points</th></tr></thead><tbody><tr><td class="position">1</td><td class="player-name">iocsh</td><td class="player-codename clickable-codename" onclick="openPlayerModal('meisch')">meisch</td><td class="score">999</td></tr><tr><td class="position">2</td><td class="player-name">keelia</td><td class="player-codename clickable-codename" onclick="openPlayerModal('kee')">kee</td><td class="score">123</td></tr><tr><td class="position">3</td><td class="player-name">kye mobato</td><td class="player-codename clickable-codename" onclick="openPlayerModal('cutiepie')">cutiepie</td><td class="score">110</td></tr><tr><td class="position">4</td><td class="player-name">areyou okay</td><td class="player-codename clickable-codename" onclick="openPlayerModal('itsoki')">itsoki</td><td class="score">108</td></tr><tr><td class="position">5</td><td class="player-name">jeorayo</td><td class="player-codename clickable-codename" onclick="openPlayerModal('starfish')">starfish</td><td class="score">107</td></tr><tr><td class="position">6</td><td class="player-name">aelin</td><td class="player-codename clickable-codename" onclick="openPlayerModal('aeiou')">aeiou</td><td class="score">101</td></tr><tr><td class="position">7</td><td class="player-name">peitho</td><td class="player-codename clickable-codename" onclick="openPlayerModal('strawberry')">strawberry</td><td class="score">86</td></tr><tr><td class="position">8</td><td class="player-name">zun shui</td><td class="player-codename clickable-codename" onclick="openPlayerModal('bunnie')">bunnie</td><td class="score">83</td></tr><tr><td class="position">9</td><td class="player-name">hansel crackers</td><td class="player-codename clickable-codename" onclick="openPlayerModal('rebisco')">rebisco</td><td class="score">79</td></tr><tr><td class="position">10</td><td class="player-name">izari nalulungkotperocute</td><td class="player-codename clickable-codename" onclick="openPlayerModal('zari')">zari</td><td class="score">58</td></tr></tbody></table></div><div class="leaderboard card"><div class="leaderboard-title">MVP Leaderboard</div><table class="leaderboard-table"><thead><tr><th>No.</th><th>Name</th><th>Codename</th><th>MVP</th></tr></thead><tbody><tr><td class="position">1</td><td class="player-name">iocsh</td><td class="player-codename clickable-codename" onclick="openPlayerModal('meisch')">meisch</td><td class="score">999</td></tr><tr><td class="position">2</td><td class="player-name">keelia</td><td class="player-codename clickable-codename" onclick="openPlayerModal('kee')">kee</td><td class="score">1</td></tr><tr><td class="position">3</td><td class="player-name">aelin</td><td class="player-codename clickable-codename" onclick="openPlayerModal('aeiou')">aeiou</td><td class="score">1</td></tr><tr><td class="position">4</td><td class="player-name">kye mobato</td><td class="player-codename clickable-codename" onclick="openPlayerModal('cutiepie')">cutiepie</td><td class="score">0</td></tr><tr><td class="position">5</td><td class="player-name">areyou okay</td><td class="player-codename clickable-codename" onclick="openPlayerModal('itsoki')">itsoki</td><td class="score">0</td></tr><tr><td class="position">6</td><td class="player-name">jeorayo</td><td class="player-codename clickable-codename" onclick="openPlayerModal('starfish')">starfish</td><td class="score">0</td></tr><tr><td class="position">7</td><td class="player-name">peitho</td><td class="player-codename clickable-codename" onclick="openPlayerModal('strawberry')">strawberry</td><td class="score">0</td></tr><tr><td class="position">8</td><td class="player-name">zun shui</td><td class="player-codename clickable-codename" onclick="openPlayerModal('bunnie')">bunnie</td><td class="score">0</td></tr><tr><td class="position">9</td><td class="player-name">hansel crackers</td><td class="player-codename clickable-codename" onclick="openPlayerModal('rebisco')">rebisco</td><td class="score">0</td></tr><tr><td class="position">10</td><td class="player-name">izari nalulungkotperocute</td><td class="player-codename clickable-codename" onclick="openPlayerModal('zari')">zari</td><td class="score">0</td></tr></tbody></table></div>
+      ' . $this->renderLeaderboards() . '
     </section>
 
     <section class="footer-bar">
@@ -768,7 +1126,7 @@
     </section>
   </main>
 
-  <div id="playerModal" class="modal" data-players='[{&quot;name&quot;:&quot;iocsh&quot;,&quot;codename&quot;:&quot;meisch&quot;,&quot;points&quot;:999,&quot;mvp&quot;:999,&quot;photo&quot;:&quot;https:\/\/i.supaimg.com\/eb3f4fd3-517c-4c99-9027-82321cb69357\/08c404b4-0fd0-4b42-8ea0-366c0f208d68.png&quot;,&quot;rank&quot;:1},{&quot;name&quot;:&quot;keelia&quot;,&quot;codename&quot;:&quot;kee&quot;,&quot;points&quot;:123,&quot;mvp&quot;:1,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:2},{&quot;name&quot;:&quot;kye mobato&quot;,&quot;codename&quot;:&quot;cutiepie&quot;,&quot;points&quot;:110,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:3},{&quot;name&quot;:&quot;areyou okay&quot;,&quot;codename&quot;:&quot;itsoki&quot;,&quot;points&quot;:108,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;jeorayo&quot;,&quot;codename&quot;:&quot;starfish&quot;,&quot;points&quot;:107,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;aelin&quot;,&quot;codename&quot;:&quot;aeiou&quot;,&quot;points&quot;:101,&quot;mvp&quot;:1,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;peitho&quot;,&quot;codename&quot;:&quot;strawberry&quot;,&quot;points&quot;:86,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;zun shui&quot;,&quot;codename&quot;:&quot;bunnie&quot;,&quot;points&quot;:83,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;hansel crackers&quot;,&quot;codename&quot;:&quot;rebisco&quot;,&quot;points&quot;:79,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;izari nalulungkotperocute&quot;,&quot;codename&quot;:&quot;zari&quot;,&quot;points&quot;:58,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;\u8c22\u9038&quot;,&quot;codename&quot;:&quot;sinbound&quot;,&quot;points&quot;:44,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;axis kairtsu&quot;,&quot;codename&quot;:&quot;zyair&quot;,&quot;points&quot;:42,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;shibal&quot;,&quot;codename&quot;:&quot;ilay&quot;,&quot;points&quot;:32,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;arwen solstice&quot;,&quot;codename&quot;:&quot;ada&quot;,&quot;points&quot;:32,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;surrendah nauw&quot;,&quot;codename&quot;:&quot;syxe&quot;,&quot;points&quot;:32,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;\u0418\u0432\u0430\u043d \u041f\u0435\u0442\u0440\u043e\u0432&quot;,&quot;codename&quot;:&quot;netpob&quot;,&quot;points&quot;:32,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null},{&quot;name&quot;:&quot;weiji zhou&quot;,&quot;codename&quot;:&quot;batumbakal&quot;,&quot;points&quot;:22,&quot;mvp&quot;:0,&quot;photo&quot;:&quot;&quot;,&quot;rank&quot;:null}]'>
+  <div id="playerModal" class="modal" data-players=\'' . $this->getPlayerDataJson() . '\'>
     <div class="modal-content">
       <button class="modal-close" onclick="closePlayerModal()">&times;</button>
       <div class="modal-player-header">
@@ -835,4 +1193,11 @@
   </script>
 
 </body>
-</html>
+</html>';
+    }
+}
+
+// Initialize and render the page
+$game = new GamePage();
+echo $game->render();
+?>
